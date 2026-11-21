@@ -99,6 +99,7 @@ GET /v1/public/portal/payment-method github.com/perfect-panel/server/internal/mo
 GET /v1/public/portal/subscribe github.com/perfect-panel/server/internal/module/billing/transport/http/public/portal.GetSubscriptionHandler
 GET /v1/public/subscribe/list github.com/perfect-panel/server/internal/module/subscription/transport/http/public/subscribe.QuerySubscribeListHandler
 GET /v1/public/subscribe/node/list github.com/perfect-panel/server/internal/module/subscription/transport/http/public/subscribe.QueryUserSubscribeNodeListHandler
+GET /v1/public/software/:name github.com/perfect-panel/server/internal/module/platform/transport/http/public/software.DownloadHandler
 GET /v1/public/ticket/detail github.com/perfect-panel/server/internal/module/support/transport/http/public/ticket.GetUserTicketDetailsHandler
 GET /v1/public/ticket/list github.com/perfect-panel/server/internal/module/support/transport/http/public/ticket.GetUserTicketListHandler
 GET /v1/public/user/affiliate/count github.com/perfect-panel/server/internal/module/billing/transport/http/public/user.QueryUserAffiliateHandler
@@ -251,3 +252,4 @@ DELETE /v1/admin/user/auth_method github.com/perfect-panel/server/internal/modul
 DELETE /v1/admin/user/batch github.com/perfect-panel/server/internal/module/identity/transport/http/admin/user.BatchDeleteUserHandler
 DELETE /v1/admin/user/device github.com/perfect-panel/server/internal/module/identity/transport/http/admin/user.DeleteUserDeviceHandler
 DELETE /v1/admin/user/subscribe github.com/perfect-panel/server/internal/module/subscription/transport/http/admin/user.DeleteUserSubscribeHandler
+HEAD /v1/public/software/:name github.com/perfect-panel/server/internal/module/platform/transport/http/public/software.DownloadHandler

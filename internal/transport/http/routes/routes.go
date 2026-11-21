@@ -127,6 +127,7 @@ func RegisterHandlers(router *server.Hertz, deps Dependencies) {
 	registerPublicPaymentRoutes(router, deps)
 	registerPublicPortalRoutes(router, deps)
 	registerPublicSubscribeRoutes(router, deps)
+	registerPublicSoftwareRoutes(router, deps)
 	registerPublicTicketRoutes(router, deps)
 	registerPublicUserRoutes(router, deps)
 }

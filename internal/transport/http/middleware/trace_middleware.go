@@ -93,7 +93,7 @@ func TraceMiddleware() app.HandlerFunc {
 			span.SetAttributes(attribute.String("error.type", "validation"))
 		}
 
-		span.SetAttributes(semconv.HTTPResponseBodySizeKey.Int(len(ctx.Response.Body())))
+		span.SetAttributes(semconv.HTTPResponseBodySizeKey.Int(responseSize(ctx)))
 	}
 }
 

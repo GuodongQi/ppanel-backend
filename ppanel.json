@@ -9610,6 +9610,54 @@
                 }
             }
         },
+        "/v1/public/software/{name}": {
+            "get": {
+                "produces": [
+                    "application/octet-stream"
+                ],
+                "tags": [
+                    "user"
+                ],
+                "summary": "Download the newest published client release",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Stable client filename",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "File bytes streamed from the newest GitHub release"
+                    }
+                }
+            },
+            "head": {
+                "produces": [
+                    "application/octet-stream"
+                ],
+                "tags": [
+                    "user"
+                ],
+                "summary": "Download the newest published client release",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Stable client filename",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "File headers for the newest GitHub release"
+                    }
+                }
+            }
+        },
         "/v1/public/subscribe/list": {
             "get": {
                 "security": [

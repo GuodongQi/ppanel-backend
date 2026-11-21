@@ -42,7 +42,7 @@ func LoggerMiddleware(enrichers ...requestmeta.Enricher) app.HandlerFunc {
 			logger.Field("method", method),
 			logger.Field("route", route),
 			logger.Field("request_bytes", len(ctx.Request.Body())),
-			logger.Field("response_bytes", len(ctx.Response.Body())),
+			logger.Field("response_bytes", responseSize(ctx)),
 			logger.RiskField("client_ip", metadata.ClientIP),
 			logger.RiskField("user_agent", metadata.UserAgent),
 		}
@@ -73,6 +73,18 @@ func LoggerMiddleware(enrichers ...requestmeta.Enricher) app.HandlerFunc {
 			logger.WithContext(c).Infow("HTTP Request", logs...)
 		}
 	}
+}
+
+func responseSize(ctx *app.RequestContext) int {
+	// Body() reads a stream into memory. Software downloads are larger than this process can hold.
+	if ctx.Response.IsBodyStream() {
+		size := ctx.Response.Header.ContentLength()
+		if size < 0 {
+			return 0
+		}
+		return size
+	}
+	return len(ctx.Response.Body())
 }
 
 func responseStatus(ctx *app.RequestContext) int {

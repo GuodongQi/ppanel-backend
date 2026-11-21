@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -67,6 +68,34 @@ func TestLoggerMiddlewareOmitsRequestAndResponseData(t *testing.T) {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("access log is missing safe diagnostic field %q: %s", expected, got)
 		}
+	}
+}
+
+func TestLoggerMiddlewareLeavesBodyStreamUnread(t *testing.T) {
+	var output bytes.Buffer
+	oldWriter := logger.Reset()
+	logger.SetWriter(logger.NewWriter(&output))
+	t.Cleanup(func() {
+		logger.Reset()
+		if oldWriter != nil {
+			logger.SetWriter(oldWriter)
+		}
+	})
+
+	ctx := app.NewContext(0)
+	ctx.Request.Header.SetMethod(consts.MethodGet)
+	ctx.Request.SetRequestURI("/v1/public/software/v2rayNG-arm64-v8a.apk")
+	body := io.NopCloser(strings.NewReader("PK"))
+	ctx.Response.SetBodyStream(body, 2)
+
+	LoggerMiddleware()(context.Background(), ctx)
+
+	remaining, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(remaining) != "PK" {
+		t.Fatalf("logger consumed the download stream, remaining %q", remaining)
 	}
 }
 
