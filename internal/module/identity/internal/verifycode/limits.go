@@ -4,9 +4,6 @@ import (
 	"context"
 
 	"github.com/perfect-panel/server/internal/auth/ratelimit"
-	"github.com/perfect-panel/server/internal/module/identity/entity/auth"
-	"github.com/perfect-panel/server/internal/module/identity/entity/user"
-	"github.com/perfect-panel/server/internal/module/identity/internal/authn/registerpolicy"
 	"github.com/perfect-panel/server/pkg/requestmeta"
 	"github.com/perfect-panel/server/pkg/xerr"
 )
@@ -40,18 +37,4 @@ func (s *Service) takeIPPermit(ctx context.Context) error {
 		return xerr.Errorf(xerr.TooManyRequests, "too many verification codes requested from this address")
 	}
 	return nil
-}
-
-// verifyHuman applies the registration Turnstile challenge to an anonymous
-// request for a register code: it starts a registration, and a script must
-// not get the deliveries a person gets. A signed-in account binding an
-// address, and every security code, prove an account already and skip it.
-func (s *Service) verifyHuman(ctx context.Context, verifyType auth.VerifyType, token string) error {
-	if verifyType != auth.Register {
-		return nil
-	}
-	if _, signedIn := user.FromContext(ctx); signedIn {
-		return nil
-	}
-	return s.deps.Policy.VerifyHuman(ctx, registerpolicy.Register, token)
 }

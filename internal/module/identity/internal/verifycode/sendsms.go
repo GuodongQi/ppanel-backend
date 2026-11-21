@@ -32,9 +32,8 @@ func (s *Service) SendSmsCode(ctx context.Context, req *dto.SendSmsCodeRequest) 
 	if err := s.ensureCodeAllowed(ctx, verifyType, identifier.Mobile); err != nil {
 		return nil, err
 	}
-	if err := s.verifyHuman(ctx, verifyType, req.CfToken); err != nil {
-		return nil, err
-	}
+	// The published registration page asks for the code before the person
+	// completes Turnstile. Account creation still checks the token.
 	// Each code costs the operator money; outside the configured countries a
 	// script could pump premium-rate numbers.
 	if cfg.MobileWhitelistEnabled && !areaCodeAllowed(req.TelephoneAreaCode, cfg.MobileWhitelist) {

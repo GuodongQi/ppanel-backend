@@ -43,9 +43,8 @@ func (s *Service) SendEmailCode(ctx context.Context, req *dto.SendCodeRequest) (
 	if err := s.ensureCodeAllowed(ctx, verifyType, identifier.Email); err != nil {
 		return nil, err
 	}
-	if err := s.verifyHuman(ctx, verifyType, req.CfToken); err != nil {
-		return nil, err
-	}
+	// The published registration page asks for the code before the person
+	// completes Turnstile. Account creation still checks the token.
 	if err := s.takeIPPermit(ctx); err != nil {
 		return nil, err
 	}
