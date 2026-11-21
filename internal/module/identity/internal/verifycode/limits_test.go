@@ -8,6 +8,7 @@ import (
 
 	dto "github.com/perfect-panel/server/internal/module/identity/contract"
 	"github.com/perfect-panel/server/internal/module/identity/entity/auth"
+	"github.com/perfect-panel/server/internal/module/identity/entity/user"
 	"github.com/perfect-panel/server/internal/module/identity/internal/authn/registerpolicy"
 	"github.com/perfect-panel/server/internal/module/identity/internal/identitytest"
 	"github.com/perfect-panel/server/pkg/logger/logtest"
@@ -57,10 +58,11 @@ func TestCodesAreCappedPerClientAddress(t *testing.T) {
 	}
 }
 
-// The published registration page requests the code before Turnstile is
-// completed, so the code itself is not the challenge. Creating the account
-// still requires the token.
-func TestRegistrationCodesDoNotWaitForTheChallenge(t *testing.T) {
+// While registration verification is on, an anonymous request for a
+// registration code passes the Turnstile challenge: it starts a registration,
+// and a script must not get the deliveries a person gets. A signed-in
+// account binding an address, and every security code, skip it.
+func TestAnonymousRegistrationCodesNeedTheChallenge(t *testing.T) {
 	logtest.Discard(t)
 	env := identitytest.New(t)
 	queue := &taskRecorder{}
@@ -78,15 +80,44 @@ func TestRegistrationCodesDoNotWaitForTheChallenge(t *testing.T) {
 		}),
 		Config: func() Snapshot { return Snapshot{VerifyCodeExpire: 300} },
 	})
+	owner := &user.User{}
+	if err := env.DB.Create(owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := env.DB.Create(&user.AuthMethods{UserId: owner.Id, AuthType: "email", AuthIdentifier: "owner@example.com", Verified: true}).Error; err != nil {
+		t.Fatal(err)
+	}
 	anonymous := identitytest.Context()
 
-	if _, err := svc.SendEmailCode(anonymous, &dto.SendCodeRequest{Email: "new@example.com", Type: uint8(auth.Register)}); err != nil {
-		t.Fatalf("registration code without a token: %v", err)
+	_, err := svc.SendEmailCode(anonymous, &dto.SendCodeRequest{Email: "new@example.com", Type: uint8(auth.Register)})
+	assertCode(t, err, xerr.TooManyRequests)
+	_, err = svc.SendEmailCode(anonymous, &dto.SendCodeRequest{Email: "new@example.com", Type: uint8(auth.Register), CfToken: "robot"})
+	assertCode(t, err, xerr.TooManyRequests)
+	_, err = svc.SendSmsCode(anonymous, &dto.SendSmsCodeRequest{Type: uint8(auth.Register), TelephoneAreaCode: "86", Telephone: "13800138000"})
+	assertCode(t, err, xerr.TooManyRequests)
+	if len(queue.tasks) != 0 {
+		t.Fatalf("deliveries = %d, want none without the challenge", len(queue.tasks))
 	}
-	if _, err := svc.SendSmsCode(anonymous, &dto.SendSmsCodeRequest{Type: uint8(auth.Register), TelephoneAreaCode: "86", Telephone: "13800138000"}); err != nil {
-		t.Fatalf("registration SMS without a token: %v", err)
+
+	if _, err := svc.SendEmailCode(anonymous, &dto.SendCodeRequest{Email: "new@example.com", Type: uint8(auth.Register), CfToken: "human"}); err != nil {
+		t.Fatalf("a human's registration code: %v", err)
 	}
-	if asked != 0 || len(queue.tasks) != 2 {
-		t.Fatalf("challenge checks = %d, deliveries = %d, want no challenge and both codes", asked, len(queue.tasks))
+	if _, err := svc.SendSmsCode(anonymous, &dto.SendSmsCodeRequest{Type: uint8(auth.Register), TelephoneAreaCode: "86", Telephone: "13800138000", CfToken: "human"}); err != nil {
+		t.Fatalf("a human's registration code by SMS: %v", err)
+	}
+	// A security code to a bound address, and a signed-in account's binding
+	// code, are not challenged.
+	checked := asked
+	if _, err := svc.SendEmailCode(anonymous, &dto.SendCodeRequest{Email: "owner@example.com", Type: uint8(auth.Security)}); err != nil {
+		t.Fatalf("a security code: %v", err)
+	}
+	if _, err := svc.SendEmailCode(user.NewContext(anonymous, owner), &dto.SendCodeRequest{Email: "second@example.com", Type: uint8(auth.Register)}); err != nil {
+		t.Fatalf("a member's binding code: %v", err)
+	}
+	if asked != checked {
+		t.Fatalf("the challenge was checked %d more times for codes that need none", asked-checked)
+	}
+	if len(queue.tasks) != 4 {
+		t.Fatalf("deliveries = %d, want the four allowed codes", len(queue.tasks))
 	}
 }
