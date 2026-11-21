@@ -3,6 +3,7 @@ package route
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	publicPortal "github.com/perfect-panel/server/internal/module/billing/transport/http/public/portal"
+	publicSoftware "github.com/perfect-panel/server/internal/module/platform/transport/http/public/software"
 	publicAnnouncement "github.com/perfect-panel/server/internal/module/support/transport/http/public/announcement"
 	publicDocument "github.com/perfect-panel/server/internal/module/support/transport/http/public/document"
 )
@@ -18,6 +19,13 @@ func registerPublicDocumentRoutes(router *server.Hertz, deps Dependencies) {
 	group.Use(deps.authMiddleware(), deps.deviceMiddleware())
 	group.GET("/detail", publicDocument.QueryDocumentDetailHandler(deps.Support))
 	group.GET("/list", publicDocument.QueryDocumentListHandler(deps.Support))
+}
+
+func registerPublicSoftwareRoutes(router *server.Hertz, _ Dependencies) {
+	// No login: the browser opens the download link directly.
+	group := router.Group("/v1/public/software")
+	group.GET("/:name", publicSoftware.DownloadHandler())
+	group.HEAD("/:name", publicSoftware.DownloadHandler())
 }
 
 func registerPublicPortalRoutes(router *server.Hertz, deps Dependencies) {

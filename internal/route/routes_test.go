@@ -49,8 +49,8 @@ func TestRegisterHandlers_routeInventory(t *testing.T) {
 	}
 
 	// Then
-	if len(routes) != 247 {
-		t.Fatalf("expected 247 routes, got %d", len(routes))
+	if len(routes) != 249 {
+		t.Fatalf("expected 249 routes, got %d", len(routes))
 	}
 	if !bytes.Equal([]byte(actual.String()), expected) {
 		t.Fatalf("route inventory differs from golden\nactual:\n%s", actual.String())
@@ -163,8 +163,8 @@ func TestRegisterHandlers_configuredRoutes(t *testing.T) {
 	}{
 		{
 			name:           "empty-fallback",
-			wantRouteCount: 247,
-			present:        []string{"/v1/subscribe/config"},
+			wantRouteCount: 249,
+			present:        []string{"/v1/subscribe/config", "/v1/public/software/:name"},
 			absent:         []string{"/"},
 		},
 		{
@@ -172,8 +172,8 @@ func TestRegisterHandlers_configuredRoutes(t *testing.T) {
 			subscribe: appconfig.SubscribeConfig{
 				SubscribePath: "/custom/subscribe",
 			},
-			wantRouteCount: 247,
-			present:        []string{"/custom/subscribe"},
+			wantRouteCount: 249,
+			present:        []string{"/custom/subscribe", "/v1/public/software/:name"},
 			absent:         []string{"/v1/subscribe/config", "/"},
 		},
 		{
@@ -181,8 +181,8 @@ func TestRegisterHandlers_configuredRoutes(t *testing.T) {
 			subscribe: appconfig.SubscribeConfig{
 				PanDomain: false,
 			},
-			wantRouteCount: 247,
-			present:        []string{"/v1/subscribe/config"},
+			wantRouteCount: 249,
+			present:        []string{"/v1/subscribe/config", "/v1/public/software/:name"},
 			absent:         []string{"/"},
 		},
 		{
@@ -190,13 +190,13 @@ func TestRegisterHandlers_configuredRoutes(t *testing.T) {
 			subscribe: appconfig.SubscribeConfig{
 				PanDomain: true,
 			},
-			wantRouteCount: 248,
-			present:        []string{"/v1/subscribe/config", "/"},
+			wantRouteCount: 250,
+			present:        []string{"/v1/subscribe/config", "/", "/v1/public/software/:name"},
 		},
 		{
 			name:           "edge-manifest-enabled",
-			wantRouteCount: 248,
-			present:        []string{"/v1/subscribe/config", "/api/edge/v1/manifest"},
+			wantRouteCount: 250,
+			present:        []string{"/v1/subscribe/config", "/api/edge/v1/manifest", "/v1/public/software/:name"},
 		},
 	}
 	for _, tc := range routeCases {
