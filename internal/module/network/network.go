@@ -7,6 +7,8 @@ import (
 	"context"
 	"time"
 
+	"net"
+
 	"github.com/perfect-panel/server/internal/config"
 	dto "github.com/perfect-panel/server/internal/module/network/contract"
 	"github.com/perfect-panel/server/internal/module/network/internal/adminserver"
@@ -118,6 +120,25 @@ type Deps struct {
 	Settings repository.SystemRepo
 	// Location is the panel time zone the daily scan clock uses.
 	Location func() *time.Location
+	// Places locates a public IP. The Reality scanner compares camouflage
+	// targets with the selected VLESS server, not with the panel host.
+	Places IPLocator
+}
+
+// IPPlace is the ASN and region of one public address.
+type IPPlace struct {
+	ASN       uint
+	ASOrg     string
+	Country   string
+	Region    string
+	City      string
+	Latitude  float64
+	Longitude float64
+}
+
+// IPLocator reads the ASN and region of an IP. A miss returns false.
+type IPLocator interface {
+	Locate(ip net.IP) (IPPlace, bool)
 }
 
 // NewRepoBuilder exports the module-owned repository implementations for
@@ -179,6 +200,7 @@ func New(deps Deps) Service {
 			Settings: realityscan.SystemSettings{Repo: deps.Settings},
 			Redis:    deps.Redis,
 			Location: deps.Location,
+			Locate:   realityLocator(deps.Places),
 		}),
 		store: deps.Store,
 	}
@@ -304,6 +326,22 @@ func (s *service) ServerPushUserTraffic(ctx context.Context, req *dto.ServerPush
 
 func (s *service) EdgeManifest(ctx context.Context, token string) (*dto.EdgeManifestResponse, error) {
 	return s.edge.Manifest(ctx, token)
+}
+
+func realityLocator(places IPLocator) realityscan.Locator {
+	if places == nil {
+		return nil
+	}
+	return func(ip string) (realityscan.Place, bool) {
+		found, ok := places.Locate(net.ParseIP(ip))
+		if !ok {
+			return realityscan.Place{}, false
+		}
+		return realityscan.Place{
+			ASN: found.ASN, ASOrg: found.ASOrg, Country: found.Country, Region: found.Region,
+			City: found.City, Latitude: found.Latitude, Longitude: found.Longitude,
+		}, true
+	}
 }
 
 // Store is the persistence capability required by this package. It excludes

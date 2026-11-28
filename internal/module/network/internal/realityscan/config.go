@@ -17,13 +17,15 @@ const (
 	maxSeeds      = 8
 	maxCandidates = 30
 	maxServers    = 200
-	maxTargets    = 800
+	maxTargets    = 2048
+	maxSubnets    = 8
 	maxResults    = 40
+	maxThreads    = 20
 
 	defaultDailyTime     = "04:00"
 	defaultPort          = 443
 	defaultRadius        = 16
-	defaultThreads       = 4
+	defaultThreads       = 8
 	defaultTimeout       = 5
 	defaultMaxCertBytes  = 8192
 	defaultScoreMargin   = 400
@@ -75,8 +77,8 @@ func Normalize(cfg dto.RealityScanConfig) (dto.RealityScanConfig, error) {
 	if cfg.Threads == 0 {
 		cfg.Threads = defaultThreads
 	}
-	if cfg.Threads < 1 || cfg.Threads > 16 {
-		return dto.RealityScanConfig{}, fmt.Errorf("threads must be from 1 to 16")
+	if cfg.Threads < 1 || cfg.Threads > maxThreads {
+		return dto.RealityScanConfig{}, fmt.Errorf("threads must be from 1 to %d", maxThreads)
 	}
 	if cfg.TimeoutSeconds == 0 {
 		cfg.TimeoutSeconds = defaultTimeout

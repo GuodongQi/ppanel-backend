@@ -3,6 +3,7 @@ package realityscan
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -10,16 +11,21 @@ import (
 	"github.com/perfect-panel/server/internal/module/network/entity/node"
 )
 
-func TestNeighborsStayInsideTheRadiusAndSkipPrivateSpace(t *testing.T) {
-	public := neighborTargets(net.ParseIP("203.0.113.10"), 2, 443)
-	if len(public) != 4 {
-		t.Fatalf("public neighbors = %d, want 4", len(public))
+func TestSlash24StaysInsideThePrefixAndSkipsPrivateSpace(t *testing.T) {
+	public := slash24Targets(net.ParseIP("203.0.113.10"), 443)
+	if len(public) != 253 {
+		t.Fatalf("public /24 = %d, want 253", len(public))
 	}
-	if got := neighborTargets(net.ParseIP("192.168.1.10"), 4, 443); len(got) != 0 {
-		t.Fatalf("private neighbors = %d, want none", len(got))
+	for _, item := range public {
+		if item.dialHost == "203.0.113.10" || item.port != 443 || !same24(net.ParseIP(item.dialHost), netip.MustParseAddr("203.0.113.10")) {
+			t.Fatalf("target %s is outside 203.0.113.10/24", item.dialHost)
+		}
 	}
-	if got := neighborTargets(net.ParseIP("2001:db8::1"), 4, 443); len(got) != 0 {
-		t.Fatalf("ipv6 neighbors = %d, want none", len(got))
+	if got := slash24Targets(net.ParseIP("192.168.1.10"), 443); len(got) != 0 {
+		t.Fatalf("private /24 = %d, want none", len(got))
+	}
+	if got := slash24Targets(net.ParseIP("2001:db8::1"), 443); len(got) != 0 {
+		t.Fatalf("ipv6 /24 = %d, want none", len(got))
 	}
 }
 
@@ -96,19 +102,20 @@ func TestApplySwitchesTheCamouflageAndKeepsTheKey(t *testing.T) {
 	nodes := &memNodes{servers: []*node.Server{server}, stored: map[int64]string{server.Id: server.Protocols}}
 	svc := New(Deps{Nodes: nodes, Now: func() time.Time { return time.Date(2026, 11, 28, 4, 0, 0, 0, time.UTC) }})
 	best := dto.RealityScanResult{
-		Feasible: true, Score: 12000, Source: "candidate", DialHost: "www.microsoft.com",
-		IP: "1.1.1.1", Port: 443, CertDomain: "www.microsoft.com",
+		Feasible: true, Score: 12000, Source: "candidate", DialHost: "mit.edu",
+		IP: "1.1.1.1", Port: 443, CertDomain: "mit.edu",
 	}
 	current := dto.RealityScanResult{Feasible: false, DialHost: "old.example", Origin: "old.example", Port: 443}
-	switches := svc.apply(context.Background(), []*node.Server{server}, DefaultConfig(), []dto.RealityScanResult{current, best}, best, true)
-	if len(switches) != 1 || switches[0].Reason != "current_down" || switches[0].ToSNI != "www.microsoft.com" {
+	site := serverSite{server: server}
+	switches := svc.apply(context.Background(), []serverSite{site}, DefaultConfig(), []dto.RealityScanResult{current, best}, map[int64]dto.RealityScanResult{server.Id: best}, true)
+	if len(switches) != 1 || switches[0].Reason != "current_down" || switches[0].ToSNI != "mit.edu" {
 		t.Fatalf("switches = %#v", switches)
 	}
 	updated, err := server.UnmarshalProtocols()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated[0].SNI != "www.microsoft.com" || updated[0].RealityServerAddr != "www.microsoft.com" || updated[0].RealityPrivateKey != "priv" {
+	if updated[0].SNI != "mit.edu" || updated[0].RealityServerAddr != "mit.edu" || updated[0].RealityPrivateKey != "priv" {
 		t.Fatalf("protocol = %#v", updated[0])
 	}
 	if !nodes.cleared {
@@ -142,6 +149,67 @@ func (m *memNodes) UpdateServerProtocolsIfCurrent(_ context.Context, id int64, c
 func (m *memNodes) ClearServerCache(context.Context, int64) error {
 	m.cleared = true
 	return nil
+}
+
+func TestPopularDomainsAndCDNOrganizationsAreExcluded(t *testing.T) {
+	for _, domain := range []string{"www.cloudflare.com", "www.apple.com", "login.microsoftonline.com", "www.google.com", "s3.amazonaws.com", "a.akamai.net", "example.fastly.net"} {
+		if !excludedDomain(domain) {
+			t.Fatalf("%s should be excluded", domain)
+		}
+	}
+	if excludedDomain("mit.edu") || excludedDomain("cs.stanford.edu") {
+		t.Fatal("education domains should remain available")
+	}
+	if !excludedOrg("Cloudflare, Inc.") || !excludedOrg("Akamai Technologies") {
+		t.Fatal("CDN organizations should be excluded")
+	}
+}
+
+func TestPlaceFollowsTheVLESSServerNotAnotherNetwork(t *testing.T) {
+	server := Place{ASN: 16509, ASOrg: "Amazon.com, Inc.", Country: "US", Region: "California", City: "San Jose", Latitude: 37.3, Longitude: -121.9}
+	panel := Place{ASN: 13335, ASOrg: "Cloudflare, Inc.", Country: "US", Region: "California", City: "San Francisco"}
+	neighbor := Place{ASN: 16509, ASOrg: "Amazon.com, Inc.", Country: "US", Region: "California", City: "San Jose"}
+	if !alignsWithServer(neighbor, server) {
+		t.Fatal("same ASN and area as the VLESS server should pass")
+	}
+	if alignsWithServer(panel, server) {
+		t.Fatal("a different ASN with a CDN organization should fail")
+	}
+	if blockedNetwork(neighbor, server) {
+		t.Fatal("the VLESS server's own Amazon ASN is not a CDN edge")
+	}
+}
+
+func TestEducationFallbackMatchesTheServerArea(t *testing.T) {
+	server := Place{ASN: 16509, Country: "US", Region: "Massachusetts", City: "Cambridge", Latitude: 42.37, Longitude: -71.1}
+	locate := func(ip string) (Place, bool) {
+		if ip == "18.9.22.169" {
+			return Place{ASN: 3, ASOrg: "Massachusetts Institute of Technology", Country: "US", Region: "Massachusetts", City: "Cambridge", Latitude: 42.36, Longitude: -71.09}, true
+		}
+		return Place{ASN: 13335, ASOrg: "Cloudflare", Country: "US", Region: "California"}, true
+	}
+	resolve := func(_ context.Context, domain string) ([]net.IP, error) {
+		if domain == "mit.edu" {
+			return []net.IP{net.ParseIP("18.9.22.169")}, nil
+		}
+		return []net.IP{net.ParseIP("1.1.1.1")}, nil
+	}
+	got := eduTargets(context.Background(), server, resolve, locate)
+	if len(got) != 1 || got[0].origin != "mit.edu" || got[0].dialHost != "18.9.22.169" {
+		t.Fatalf("edu targets = %#v", got)
+	}
+}
+
+func TestThreadsCannotExceedTwenty(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Threads = 21
+	if _, err := Normalize(cfg); err == nil {
+		t.Fatal("threads above 20 should fail")
+	}
+	cfg.Threads = 20
+	if _, err := Normalize(cfg); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCandidateDomainStaysTheDestination(t *testing.T) {

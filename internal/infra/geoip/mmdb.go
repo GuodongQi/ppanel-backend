@@ -203,30 +203,61 @@ func fileHasDigest(path string, digest []byte) (bool, error) {
 	return bytes.Equal(hash.Sum(nil), digest), nil
 }
 
+// Network is the City and ASN information Lookup found for one public IP.
+type Network struct {
+	CountryCode    string
+	Country        string
+	Region         string
+	City           string
+	Latitude       float64
+	Longitude      float64
+	ASN            uint
+	ASOrganization string
+}
+
+// Lookup reads the City and ASN databases for a public IP. A miss, a private
+// address, or a nil database returns false. Lookup errors stay local.
+func (ipLoc *IPLocation) Lookup(ip net.IP) (Network, bool) {
+	if ipLoc == nil || ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return Network{}, false
+	}
+	var found Network
+	ok := false
+	if ipLoc.DB != nil {
+		if record, err := ipLoc.DB.City(ip); err == nil && record != nil {
+			found.CountryCode = record.Country.IsoCode
+			found.Country = preferredGeoName(record.Country.Names)
+			if len(record.Subdivisions) > 0 {
+				found.Region = preferredGeoName(record.Subdivisions[0].Names)
+			}
+			found.City = preferredGeoName(record.City.Names)
+			found.Latitude = record.Location.Latitude
+			found.Longitude = record.Location.Longitude
+			ok = found.CountryCode != "" || found.City != ""
+		}
+	}
+	if ipLoc.ASNDB != nil {
+		if record, err := ipLoc.ASNDB.ASN(ip); err == nil && record != nil && record.AutonomousSystemNumber != 0 {
+			found.ASN = record.AutonomousSystemNumber
+			found.ASOrganization = record.AutonomousSystemOrganization
+			ok = true
+		}
+	}
+	return found, ok
+}
+
 // Enrich performs at most one City and one ASN lookup for a public client IP.
 // MMDB lookup errors are treated as misses so request handling remains
 // independent from optional risk metadata. A nil receiver, the server
 // without a database, only normalizes the metadata.
 func (ipLoc *IPLocation) Enrich(metadata requestmeta.Metadata) requestmeta.Metadata {
-	ip := net.ParseIP(metadata.ClientIP)
-	if ipLoc == nil || ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
-		return requestmeta.Normalize(metadata)
-	}
-	if ipLoc.DB != nil {
-		if record, err := ipLoc.DB.City(ip); err == nil && record != nil {
-			metadata.IPCountryCode = record.Country.IsoCode
-			metadata.IPCountry = preferredGeoName(record.Country.Names)
-			if len(record.Subdivisions) > 0 {
-				metadata.IPRegion = preferredGeoName(record.Subdivisions[0].Names)
-			}
-			metadata.IPCity = preferredGeoName(record.City.Names)
-		}
-	}
-	if ipLoc.ASNDB != nil {
-		if record, err := ipLoc.ASNDB.ASN(ip); err == nil && record != nil {
-			metadata.IPASN = record.AutonomousSystemNumber
-			metadata.IPASOrganization = record.AutonomousSystemOrganization
-		}
+	if found, ok := ipLoc.Lookup(net.ParseIP(metadata.ClientIP)); ok {
+		metadata.IPCountryCode = found.CountryCode
+		metadata.IPCountry = found.Country
+		metadata.IPRegion = found.Region
+		metadata.IPCity = found.City
+		metadata.IPASN = found.ASN
+		metadata.IPASOrganization = found.ASOrganization
 	}
 	return requestmeta.Normalize(metadata)
 }

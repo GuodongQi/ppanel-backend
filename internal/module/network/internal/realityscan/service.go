@@ -3,6 +3,8 @@ package realityscan
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -46,11 +48,20 @@ type Deps struct {
 	Redis    *redis.Client
 	Now      func() time.Time
 	Location func() *time.Location
+	// Locate reads the ASN and region of an IP. The scanner uses it for the
+	// selected VLESS server's address, not for the machine running the panel.
+	Locate Locator
+	// Resolve and Status are optional test seams. Nil uses DNS and one HTTPS
+	// request.
+	Resolve resolver
+	Status  statusFunc
 }
 
 // Service scans Reality camouflage targets and switches the ones that win.
 type Service struct {
-	deps Deps
+	deps    Deps
+	resolve resolver
+	status  statusFunc
 
 	mu      sync.Mutex
 	running bool
@@ -64,7 +75,15 @@ func New(deps Deps) *Service {
 	if deps.Location == nil {
 		deps.Location = func() *time.Location { return time.Local }
 	}
-	return &Service{deps: deps}
+	resolve := deps.Resolve
+	if resolve == nil {
+		resolve = defaultResolve
+	}
+	status := deps.Status
+	if status == nil {
+		status = defaultStatus
+	}
+	return &Service{deps: deps, resolve: resolve, status: status}
 }
 
 // View returns the saved config and the latest report.
@@ -147,43 +166,61 @@ func (s *Service) execute(cfg dto.RealityScanConfig, started time.Time, previous
 		return
 	}
 	selected := selectServers(servers, cfg.ServerIDs)
-	currents := currentTargets(selected, cfg.Port)
-	seeds := append([]string{}, cfg.Seeds...)
-	if cfg.ScanServerNeighbors {
-		for _, server := range selected {
-			if strings.TrimSpace(server.Address) != "" {
-				seeds = append(seeds, server.Address)
-			}
-		}
-	}
-	items, truncated := buildTargets(ctx, cfg, currents, seeds)
+	sites := s.vlessSites(ctx, selected)
+	items := s.neighborTargets(sites, cfg)
+	items = append(items, s.domainTargets(ctx, cfg.Seeds, sites, "seed")...)
+	items = append(items, s.domainTargets(ctx, cfg.Candidates, sites, "candidate")...)
+	items = append(items, currentTargets(siteServers(sites), cfg.Port)...)
+	items, truncated := dedupeTargets(items)
 	report.Truncated = truncated
-	results := probeAll(ctx, items, cfg.Threads, cfg.TimeoutSeconds, cfg.MaxCertBytes)
+	results := s.probe(ctx, items, cfg)
 	if ctx.Err() != nil {
 		s.finish(ctx, report, ctx.Err())
 		return
 	}
-	feasible := make([]dto.RealityScanResult, 0, len(results))
-	for _, item := range results {
-		if item.Feasible {
-			feasible = append(feasible, item)
+	bestBy := map[int64]dto.RealityScanResult{}
+	for _, site := range sites {
+		if best, ok := firstFit(results, site, s.deps.Locate, "neighbor"); ok {
+			bestBy[site.server.Id] = best
+			continue
+		}
+		if best, ok := firstFit(results, site, s.deps.Locate, "candidate"); ok {
+			bestBy[site.server.Id] = best
+			continue
+		}
+		if best, ok := firstFit(results, site, s.deps.Locate, "seed"); ok {
+			bestBy[site.server.Id] = best
+			continue
+		}
+		if !cfg.ScanServerNeighbors || !site.known || ctx.Err() != nil {
+			continue
+		}
+		edu := eduTargets(ctx, site.place, s.resolve, s.deps.Locate)
+		eduResults := s.probe(ctx, edu, cfg)
+		results = append(results, eduResults...)
+		if best, ok := firstFit(eduResults, site, s.deps.Locate, "edu"); ok {
+			bestBy[site.server.Id] = best
 		}
 	}
-	sort.Slice(feasible, func(i, j int) bool { return feasible[i].Score > feasible[j].Score })
+	shown := visible(results, sites, s.deps.Locate)
+	sort.Slice(shown, func(i, j int) bool { return shown[i].Score > shown[j].Score })
 	report.Scanned = len(results)
-	report.Feasible = len(feasible)
-	if len(feasible) > maxResults {
-		report.Results = feasible[:maxResults]
+	report.Feasible = len(shown)
+	if len(shown) > maxResults {
+		report.Results = shown[:maxResults]
 	} else {
-		report.Results = feasible
+		report.Results = shown
 	}
-	best, hasBest := bestFeasible(feasible)
 	cooled := cooldownElapsed(previousFinished, cfg.CooldownHours, s.now())
-	if cfg.AutoSwitch && hasBest {
+	if cfg.AutoSwitch && len(bestBy) > 0 {
 		report.Applied = true
-		report.Switches = s.apply(ctx, selected, cfg, results, best, cooled)
+		report.Switches = s.apply(ctx, sites, cfg, results, bestBy, cooled)
 	}
 	s.finish(ctx, report, nil)
+}
+
+func (s *Service) probe(ctx context.Context, items []target, cfg dto.RealityScanConfig) []dto.RealityScanResult {
+	return probeAll(ctx, items, cfg.Threads, cfg.TimeoutSeconds, cfg.MaxCertBytes, s.resolve, s.status)
 }
 
 func (s *Service) finish(ctx context.Context, report dto.RealityScanReport, err error) {
@@ -202,9 +239,11 @@ func (s *Service) finish(ctx context.Context, report dto.RealityScanReport, err 
 	}
 }
 
-func (s *Service) apply(ctx context.Context, servers []*node.Server, cfg dto.RealityScanConfig, results []dto.RealityScanResult, best dto.RealityScanResult, cooled bool) []dto.RealityScanSwitch {
+func (s *Service) apply(ctx context.Context, sites []serverSite, cfg dto.RealityScanConfig, results []dto.RealityScanResult, bestBy map[int64]dto.RealityScanResult, cooled bool) []dto.RealityScanSwitch {
 	var switches []dto.RealityScanSwitch
-	for _, server := range servers {
+	for _, site := range sites {
+		server := site.server
+		best := bestBy[server.Id]
 		protocols, err := server.UnmarshalProtocols()
 		if err != nil {
 			switches = append(switches, dto.RealityScanSwitch{ServerID: server.Id, ServerName: server.Name, Reason: "unreadable"})
@@ -214,7 +253,7 @@ func (s *Service) apply(ctx context.Context, servers []*node.Server, cfg dto.Rea
 		changed := false
 		for index := range protocols {
 			protocol := &protocols[index]
-			if !isReality(*protocol) {
+			if !isVLESSReality(*protocol) {
 				continue
 			}
 			addr := protocol.RealityServerAddr
@@ -295,6 +334,209 @@ func isReality(protocol node.Protocol) bool {
 	}
 }
 
+func isVLESSReality(protocol node.Protocol) bool {
+	return isReality(protocol) && strings.EqualFold(strings.TrimSpace(protocol.Type), "vless")
+}
+
+type serverSite struct {
+	server *node.Server
+	ip     netip.Addr
+	place  Place
+	known  bool
+}
+
+func (s *Service) vlessSites(ctx context.Context, servers []*node.Server) []serverSite {
+	out := make([]serverSite, 0, len(servers))
+	for _, server := range servers {
+		if server == nil || !hasVLESSReality(server) {
+			continue
+		}
+		ip := s.serverIPv4(ctx, server.Address)
+		addr, ok := publicIPv4(ip)
+		if !ok {
+			continue
+		}
+		site := serverSite{server: server, ip: addr}
+		if s.deps.Locate != nil {
+			if place, found := s.deps.Locate(addr.String()); found {
+				site.place = place
+				site.known = true
+			}
+		}
+		out = append(out, site)
+	}
+	return out
+}
+
+func hasVLESSReality(server *node.Server) bool {
+	protocols, err := server.UnmarshalProtocols()
+	if err != nil {
+		return false
+	}
+	for _, protocol := range protocols {
+		if isVLESSReality(protocol) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) serverIPv4(ctx context.Context, address string) net.IP {
+	address = strings.TrimSpace(address)
+	if ip := net.ParseIP(address); ip != nil {
+		return ip
+	}
+	if address == "" || s.resolve == nil {
+		return nil
+	}
+	ips, err := s.resolve(ctx, address)
+	if err != nil {
+		return nil
+	}
+	for _, ip := range ips {
+		if _, ok := publicIPv4(ip); ok {
+			return ip
+		}
+	}
+	return nil
+}
+
+func (s *Service) neighborTargets(sites []serverSite, cfg dto.RealityScanConfig) []target {
+	if !cfg.ScanServerNeighbors {
+		return nil
+	}
+	var items []target
+	seen := map[netip.Prefix]struct{}{}
+	for _, site := range sites {
+		prefix, err := site.ip.Prefix(24)
+		if err != nil {
+			continue
+		}
+		prefix = prefix.Masked()
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+		if len(seen) >= maxSubnets {
+			break
+		}
+		seen[prefix] = struct{}{}
+		items = append(items, slash24Targets(net.ParseIP(site.ip.String()), scanPort)...)
+	}
+	return items
+}
+
+func (s *Service) domainTargets(ctx context.Context, names []string, sites []serverSite, source string) []target {
+	var out []target
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || net.ParseIP(name) != nil || excludedDomain(name) || s.resolve == nil {
+			continue
+		}
+		ips, err := s.resolve(ctx, name)
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			addr, ok := publicIPv4(ip)
+			if !ok || !domainFits(addr, sites, s.deps.Locate) {
+				continue
+			}
+			out = append(out, target{
+				dialHost: addr.String(), serverName: name, origin: name, source: source, port: scanPort,
+			})
+			break
+		}
+	}
+	return out
+}
+
+func domainFits(ip netip.Addr, sites []serverSite, locate Locator) bool {
+	for _, site := range sites {
+		if same24(net.ParseIP(ip.String()), site.ip) && neighborPlace(ip, site, locate) {
+			return true
+		}
+		if !site.known || locate == nil {
+			continue
+		}
+		place, found := locate(ip.String())
+		if found && !blockedNetwork(place, site.place) && sameArea(place, site.place) {
+			return true
+		}
+	}
+	return false
+}
+
+func neighborPlace(ip netip.Addr, site serverSite, locate Locator) bool {
+	if !site.known || locate == nil {
+		return true
+	}
+	place, found := locate(ip.String())
+	if !found {
+		return true
+	}
+	return alignsWithServer(place, site.place)
+}
+
+func firstFit(results []dto.RealityScanResult, site serverSite, locate Locator, source string) (dto.RealityScanResult, bool) {
+	var best dto.RealityScanResult
+	found := false
+	for _, item := range results {
+		if !item.Feasible || item.Source != source || !fitsSite(item, site, locate) {
+			continue
+		}
+		if !found || item.Score > best.Score {
+			best = item
+			found = true
+		}
+	}
+	return best, found
+}
+
+func fitsSite(item dto.RealityScanResult, site serverSite, locate Locator) bool {
+	ip := net.ParseIP(item.IP)
+	if ip == nil {
+		ip = net.ParseIP(item.DialHost)
+	}
+	addr, ok := publicIPv4(ip)
+	if !ok {
+		return false
+	}
+	if same24(ip, site.ip) {
+		return neighborPlace(addr, site, locate)
+	}
+	if item.Source == "neighbor" || item.Source == "current" || item.Source == "server" || item.Source == "seed" {
+		return false
+	}
+	if !site.known || locate == nil {
+		return false
+	}
+	place, found := locate(addr.String())
+	return found && !blockedNetwork(place, site.place) && sameArea(place, site.place)
+}
+
+func visible(results []dto.RealityScanResult, sites []serverSite, locate Locator) []dto.RealityScanResult {
+	out := make([]dto.RealityScanResult, 0, len(results))
+	seen := map[string]struct{}{}
+	for _, item := range results {
+		if !item.Feasible {
+			continue
+		}
+		for _, site := range sites {
+			if !fitsSite(item, site, locate) {
+				continue
+			}
+			key := item.DialHost + "|" + item.CertDomain + "|" + item.Source
+			if _, ok := seen[key]; ok {
+				break
+			}
+			seen[key] = struct{}{}
+			out = append(out, item)
+			break
+		}
+	}
+	return out
+}
+
 func currentTargets(servers []*node.Server, port int) []target {
 	var out []target
 	for _, server := range servers {
@@ -303,7 +545,7 @@ func currentTargets(servers []*node.Server, port int) []target {
 			continue
 		}
 		for _, protocol := range protocols {
-			if !isReality(protocol) {
+			if !isVLESSReality(protocol) {
 				continue
 			}
 			host := strings.TrimSpace(protocol.RealityServerAddr)
@@ -323,6 +565,14 @@ func currentTargets(servers []*node.Server, port int) []target {
 			}
 			out = append(out, item)
 		}
+	}
+	return out
+}
+
+func siteServers(sites []serverSite) []*node.Server {
+	out := make([]*node.Server, 0, len(sites))
+	for _, site := range sites {
+		out = append(out, site.server)
 	}
 	return out
 }
