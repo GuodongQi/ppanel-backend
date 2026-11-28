@@ -47,6 +47,7 @@ func DefaultConfig() dto.RealityScanConfig {
 		ScoreMargin:         defaultScoreMargin,
 		CooldownHours:       defaultCooldownHours,
 		ServerIDs:           []int64{},
+		Servers:             []dto.RealityScanServer{},
 		Threads:             defaultThreads,
 		TimeoutSeconds:      defaultTimeout,
 		MaxCertBytes:        defaultMaxCertBytes,
@@ -116,7 +117,50 @@ func Normalize(cfg dto.RealityScanConfig) (dto.RealityScanConfig, error) {
 	cfg.Seeds = seeds
 	cfg.Candidates = candidates
 	cfg.ServerIDs = cleanIDs(cfg.ServerIDs)
+	servers, err := cleanServers(cfg)
+	if err != nil {
+		return dto.RealityScanConfig{}, err
+	}
+	cfg.Servers = servers
 	return cfg, nil
+}
+
+func cleanServers(cfg dto.RealityScanConfig) ([]dto.RealityScanServer, error) {
+	servers := cfg.Servers
+	if len(servers) == 0 {
+		for _, id := range cfg.ServerIDs {
+			servers = append(servers, dto.RealityScanServer{
+				ServerID: id, Enabled: true, AutoSwitch: cfg.AutoSwitch,
+				ScoreMargin: cfg.ScoreMargin, CooldownHours: cfg.CooldownHours,
+			})
+		}
+	}
+	seen := map[int64]struct{}{}
+	out := make([]dto.RealityScanServer, 0, len(servers))
+	for _, item := range servers {
+		if item.ServerID <= 0 {
+			continue
+		}
+		if _, ok := seen[item.ServerID]; ok {
+			continue
+		}
+		if item.CooldownHours == 0 {
+			item.CooldownHours = cfg.CooldownHours
+		}
+		if item.CooldownHours < 1 || item.CooldownHours > 168 {
+			return nil, fmt.Errorf("cooldown_hours must be from 1 to 168")
+		}
+		if item.ScoreMargin < 0 || item.ScoreMargin > 10000 {
+			return nil, fmt.Errorf("score_margin must be from 0 to 10000")
+		}
+		seen[item.ServerID] = struct{}{}
+		out = append(out, item)
+		if len(out) == maxServers {
+			break
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })
+	return out, nil
 }
 
 func cleanHosts(values []string, limit int, label string) ([]string, error) {

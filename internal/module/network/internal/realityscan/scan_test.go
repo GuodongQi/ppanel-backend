@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,7 +108,12 @@ func TestApplySwitchesTheCamouflageAndKeepsTheKey(t *testing.T) {
 	}
 	current := dto.RealityScanResult{Feasible: false, DialHost: "old.example", Origin: "old.example", Port: 443}
 	site := serverSite{server: server}
-	switches := svc.apply(context.Background(), []serverSite{site}, DefaultConfig(), []dto.RealityScanResult{current, best}, map[int64]dto.RealityScanResult{server.Id: best}, true)
+	cfg := DefaultConfig()
+	cfg.Servers = []dto.RealityScanServer{{
+		ServerID: server.Id, Enabled: true, AutoSwitch: true,
+		ScoreMargin: cfg.ScoreMargin, CooldownHours: cfg.CooldownHours,
+	}}
+	switches := svc.apply(context.Background(), []serverSite{site}, cfg, []dto.RealityScanResult{current, best}, map[int64]dto.RealityScanResult{server.Id: best}, "")
 	if len(switches) != 1 || switches[0].Reason != "current_down" || switches[0].ToSNI != "mit.edu" {
 		t.Fatalf("switches = %#v", switches)
 	}
@@ -194,9 +200,27 @@ func TestEducationFallbackMatchesTheServerArea(t *testing.T) {
 		}
 		return []net.IP{net.ParseIP("1.1.1.1")}, nil
 	}
-	got := eduTargets(context.Background(), server, resolve, locate)
-	if len(got) != 1 || got[0].origin != "mit.edu" || got[0].dialHost != "18.9.22.169" {
-		t.Fatalf("edu targets = %#v", got)
+	find := func(context.Context, Place) ([]string, error) {
+		return []string{"ua.edu", "mit.edu", "www.google.com"}, nil
+	}
+	got, kept, err := eduTargets(context.Background(), server, resolve, locate, find)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].origin != "mit.edu" || got[0].dialHost != "18.9.22.169" || len(kept) != 1 {
+		t.Fatalf("edu targets = %#v kept = %#v", got, kept)
+	}
+}
+
+func TestEducationSearchReadsDomainsFromResultPages(t *testing.T) {
+	body := `<a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.mit.edu%2F&amp;rut=1">MIT</a><a href="https://www.google.com/">Google</a>`
+	got := parseEduDomains(body)
+	if len(got) != 1 || got[0] != "www.mit.edu" {
+		t.Fatalf("domains = %#v", got)
+	}
+	queries := eduQueries(Place{Country: "US", Region: "California", City: "San Jose"})
+	if len(queries) != 2 || !strings.Contains(queries[0], "site:.edu") {
+		t.Fatalf("queries = %#v", queries)
 	}
 }
 

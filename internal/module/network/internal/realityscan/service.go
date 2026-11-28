@@ -3,6 +3,7 @@ package realityscan
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/netip"
 	"sort"
@@ -165,11 +166,12 @@ func (s *Service) execute(cfg dto.RealityScanConfig, started time.Time, previous
 		s.finish(ctx, report, err)
 		return
 	}
-	selected := selectServers(servers, cfg.ServerIDs)
-	sites := s.vlessSites(ctx, selected)
+	sites := enabledSites(s.vlessSites(ctx, servers), cfg)
+	if len(sites) == 0 {
+		s.finish(ctx, report, fmt.Errorf("no VLESS server is enabled for scanning"))
+		return
+	}
 	items := s.neighborTargets(sites, cfg)
-	items = append(items, s.domainTargets(ctx, cfg.Seeds, sites, "seed")...)
-	items = append(items, s.domainTargets(ctx, cfg.Candidates, sites, "candidate")...)
 	items = append(items, currentTargets(siteServers(sites), cfg.Port)...)
 	items, truncated := dedupeTargets(items)
 	report.Truncated = truncated
@@ -179,6 +181,7 @@ func (s *Service) execute(cfg dto.RealityScanConfig, started time.Time, previous
 		return
 	}
 	bestBy := map[int64]dto.RealityScanResult{}
+	var eduSearches []dto.RealityScanEduSearch
 	for _, site := range sites {
 		if best, ok := firstFit(results, site, s.deps.Locate, "neighbor"); ok {
 			bestBy[site.server.Id] = best
@@ -195,7 +198,15 @@ func (s *Service) execute(cfg dto.RealityScanConfig, started time.Time, previous
 		if !cfg.ScanServerNeighbors || !site.known || ctx.Err() != nil {
 			continue
 		}
-		edu := eduTargets(ctx, site.place, s.resolve, s.deps.Locate)
+		edu, domains, eduErr := eduTargets(ctx, site.place, s.resolve, s.deps.Locate, defaultEduDomains)
+		search := dto.RealityScanEduSearch{ServerID: site.server.Id, Query: strings.Join(eduQueries(site.place), " | "), Domains: domains}
+		if eduErr != nil {
+			search.Error = eduErr.Error()
+		}
+		if search.Domains == nil {
+			search.Domains = []string{}
+		}
+		eduSearches = append(eduSearches, search)
 		eduResults := s.probe(ctx, edu, cfg)
 		results = append(results, eduResults...)
 		if best, ok := firstFit(eduResults, site, s.deps.Locate, "edu"); ok {
@@ -206,15 +217,20 @@ func (s *Service) execute(cfg dto.RealityScanConfig, started time.Time, previous
 	sort.Slice(shown, func(i, j int) bool { return shown[i].Score > shown[j].Score })
 	report.Scanned = len(results)
 	report.Feasible = len(shown)
+	report.EduSearches = eduSearches
 	if len(shown) > maxResults {
 		report.Results = shown[:maxResults]
 	} else {
 		report.Results = shown
 	}
-	cooled := cooldownElapsed(previousFinished, cfg.CooldownHours, s.now())
-	if cfg.AutoSwitch && len(bestBy) > 0 {
-		report.Applied = true
-		report.Switches = s.apply(ctx, sites, cfg, results, bestBy, cooled)
+	if len(bestBy) > 0 {
+		report.Switches = s.apply(ctx, sites, cfg, results, bestBy, previousFinished)
+		for _, item := range report.Switches {
+			if item.ToAddr != "" {
+				report.Applied = true
+				break
+			}
+		}
 	}
 	s.finish(ctx, report, nil)
 }
@@ -239,10 +255,15 @@ func (s *Service) finish(ctx context.Context, report dto.RealityScanReport, err 
 	}
 }
 
-func (s *Service) apply(ctx context.Context, sites []serverSite, cfg dto.RealityScanConfig, results []dto.RealityScanResult, bestBy map[int64]dto.RealityScanResult, cooled bool) []dto.RealityScanSwitch {
+func (s *Service) apply(ctx context.Context, sites []serverSite, cfg dto.RealityScanConfig, results []dto.RealityScanResult, bestBy map[int64]dto.RealityScanResult, previousFinished string) []dto.RealityScanSwitch {
 	var switches []dto.RealityScanSwitch
 	for _, site := range sites {
 		server := site.server
+		policy, ok := serverPolicy(cfg, server.Id)
+		if !ok || !policy.Enabled || !policy.AutoSwitch {
+			continue
+		}
+		cooled := cooldownElapsed(previousFinished, policy.CooldownHours, s.now())
 		best := bestBy[server.Id]
 		protocols, err := server.UnmarshalProtocols()
 		if err != nil {
@@ -265,7 +286,7 @@ func (s *Service) apply(ctx context.Context, sites []serverSite, cfg dto.Reality
 				port = cfg.Port
 			}
 			current, currentOK := currentScore(results, addr, port, protocol.SNI)
-			replace, reason := decide(current, currentOK, best, cfg.ScoreMargin, cooled)
+			replace, reason := decide(current, currentOK, best, policy.ScoreMargin, cooled)
 			entry := dto.RealityScanSwitch{
 				ServerID:   server.Id,
 				ServerName: server.Name,
@@ -293,8 +314,8 @@ func (s *Service) apply(ctx context.Context, sites []serverSite, cfg dto.Reality
 			switches = append(switches, dto.RealityScanSwitch{ServerID: server.Id, ServerName: server.Name, Reason: "store_failed"})
 			continue
 		}
-		ok, err := s.deps.Nodes.UpdateServerProtocolsIfCurrent(ctx, server.Id, currentJSON, server.Protocols)
-		if err != nil || !ok {
+		updated, err := s.deps.Nodes.UpdateServerProtocolsIfCurrent(ctx, server.Id, currentJSON, server.Protocols)
+		if err != nil || !updated {
 			for i := range switches {
 				if switches[i].ServerID == server.Id && switches[i].ToAddr != "" {
 					switches[i].Reason = "conflict"
@@ -516,25 +537,82 @@ func fitsSite(item dto.RealityScanResult, site serverSite, locate Locator) bool 
 
 func visible(results []dto.RealityScanResult, sites []serverSite, locate Locator) []dto.RealityScanResult {
 	out := make([]dto.RealityScanResult, 0, len(results))
-	seen := map[string]struct{}{}
+	seen := map[string]int{}
 	for _, item := range results {
 		if !item.Feasible {
 			continue
 		}
+		var ids []int64
 		for _, site := range sites {
-			if !fitsSite(item, site, locate) {
-				continue
+			if site.server != nil && fitsSite(item, site, locate) {
+				ids = append(ids, site.server.Id)
 			}
-			key := item.DialHost + "|" + item.CertDomain + "|" + item.Source
-			if _, ok := seen[key]; ok {
-				break
-			}
-			seen[key] = struct{}{}
-			out = append(out, item)
-			break
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		key := item.DialHost + "|" + item.CertDomain + "|" + item.Source
+		if index, ok := seen[key]; ok {
+			out[index].ServerIDs = mergeIDs(out[index].ServerIDs, ids)
+			continue
+		}
+		item.ServerIDs = ids
+		seen[key] = len(out)
+		out = append(out, item)
+	}
+	return out
+}
+
+func mergeIDs(left, right []int64) []int64 {
+	seen := map[int64]struct{}{}
+	out := append([]int64{}, left...)
+	for _, id := range left {
+		seen[id] = struct{}{}
+	}
+	for _, id := range right {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func enabledServerIDs(cfg dto.RealityScanConfig) []int64 {
+	ids := make([]int64, 0, len(cfg.Servers))
+	for _, item := range cfg.Servers {
+		if item.Enabled && item.ServerID > 0 {
+			ids = append(ids, item.ServerID)
+		}
+	}
+	return ids
+}
+
+func enabledSites(sites []serverSite, cfg dto.RealityScanConfig) []serverSite {
+	wanted := map[int64]struct{}{}
+	for _, id := range enabledServerIDs(cfg) {
+		wanted[id] = struct{}{}
+	}
+	out := make([]serverSite, 0, len(wanted))
+	for _, site := range sites {
+		if site.server == nil {
+			continue
+		}
+		if _, ok := wanted[site.server.Id]; ok {
+			out = append(out, site)
 		}
 	}
 	return out
+}
+
+func serverPolicy(cfg dto.RealityScanConfig, id int64) (dto.RealityScanServer, bool) {
+	for _, item := range cfg.Servers {
+		if item.ServerID == id {
+			return item, true
+		}
+	}
+	return dto.RealityScanServer{}, false
 }
 
 func currentTargets(servers []*node.Server, port int) []target {
@@ -667,6 +745,9 @@ func (s *Service) saveReport(ctx context.Context, report dto.RealityScanReport) 
 	}
 	if report.Switches == nil {
 		report.Switches = []dto.RealityScanSwitch{}
+	}
+	if report.EduSearches == nil {
+		report.EduSearches = []dto.RealityScanEduSearch{}
 	}
 	data, err := json.Marshal(report)
 	if err != nil {
