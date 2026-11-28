@@ -72,7 +72,7 @@ func (srv *Application) serviceDependencies(bootstrapped *lifecycle.Readiness) D
 				Routes:           srv.routeDependencies(),
 				Notification:     srv.Notification,
 				TelegramBotToken: func() string { return srv.Runtime.Config().Telegram.BotToken },
-				RequestMetadata:  srv.GeoIP.Enrich,
+				RequestMetadata:  srv.GeoSlot.Enrich,
 				TrustedProxies:   boot.TrustedProxies,
 				AllowedOrigins:   boot.AllowedOrigins,
 				HTTP:             boot.HTTP,

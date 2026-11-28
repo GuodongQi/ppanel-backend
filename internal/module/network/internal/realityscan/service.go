@@ -56,6 +56,15 @@ type Deps struct {
 	// request.
 	Resolve resolver
 	Status  statusFunc
+	// Geo opens or reports the City and ASN databases used to place a VLESS
+	// server. Nil leaves that status empty.
+	Geo GeoManager
+}
+
+// GeoManager installs the databases selected in the global scan settings.
+type GeoManager interface {
+	Apply(context.Context, dto.RealityScanConfig) (dto.RealityScanGeoStatus, error)
+	Status() dto.RealityScanGeoStatus
 }
 
 // Service scans Reality camouflage targets and switches the ones that win.
@@ -94,7 +103,14 @@ func (s *Service) View(ctx context.Context) (dto.RealityScanView, error) {
 		return dto.RealityScanView{}, err
 	}
 	report.Running = s.scanRunning(report)
-	return dto.RealityScanView{Config: cfg, Report: report}, nil
+	return dto.RealityScanView{Config: cfg, Report: report, GeoIP: s.geoStatus()}, nil
+}
+
+func (s *Service) geoStatus() dto.RealityScanGeoStatus {
+	if s.deps.Geo == nil {
+		return dto.RealityScanGeoStatus{}
+	}
+	return s.deps.Geo.Status()
 }
 
 // Save stores a normalized config.
@@ -106,7 +122,18 @@ func (s *Service) Save(ctx context.Context, cfg dto.RealityScanConfig) (dto.Real
 	if err := s.saveConfig(ctx, normalized); err != nil {
 		return dto.RealityScanView{}, err
 	}
-	return s.View(ctx)
+	view, err := s.View(ctx)
+	if err != nil {
+		return dto.RealityScanView{}, err
+	}
+	if s.deps.Geo != nil {
+		status, applyErr := s.deps.Geo.Apply(ctx, normalized)
+		if applyErr != nil && status.Error == "" {
+			status.Error = applyErr.Error()
+		}
+		view.GeoIP = status
+	}
+	return view, nil
 }
 
 // RunScheduled starts today's scan once the configured time has passed.

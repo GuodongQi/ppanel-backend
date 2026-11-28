@@ -123,6 +123,15 @@ type Deps struct {
 	// Places locates a public IP. The Reality scanner compares camouflage
 	// targets with the selected VLESS server, not with the panel host.
 	Places IPLocator
+	// GeoIP downloads and opens the City and ASN databases when the scan
+	// settings ask for them.
+	GeoIP GeoIPManager
+}
+
+// GeoIPManager installs the databases named by the Reality scan settings.
+type GeoIPManager interface {
+	Apply(context.Context, dto.RealityScanConfig) (dto.RealityScanGeoStatus, error)
+	Status() dto.RealityScanGeoStatus
 }
 
 // IPPlace is the ASN and region of one public address.
@@ -201,6 +210,7 @@ func New(deps Deps) Service {
 			Redis:    deps.Redis,
 			Location: deps.Location,
 			Locate:   realityLocator(deps.Places),
+			Geo:      geoBridge{deps.GeoIP},
 		}),
 		store: deps.Store,
 	}
@@ -326,6 +336,22 @@ func (s *service) ServerPushUserTraffic(ctx context.Context, req *dto.ServerPush
 
 func (s *service) EdgeManifest(ctx context.Context, token string) (*dto.EdgeManifestResponse, error) {
 	return s.edge.Manifest(ctx, token)
+}
+
+type geoBridge struct{ GeoIPManager }
+
+func (g geoBridge) Apply(ctx context.Context, cfg dto.RealityScanConfig) (dto.RealityScanGeoStatus, error) {
+	if g.GeoIPManager == nil {
+		return dto.RealityScanGeoStatus{}, nil
+	}
+	return g.GeoIPManager.Apply(ctx, cfg)
+}
+
+func (g geoBridge) Status() dto.RealityScanGeoStatus {
+	if g.GeoIPManager == nil {
+		return dto.RealityScanGeoStatus{}
+	}
+	return g.GeoIPManager.Status()
 }
 
 func realityLocator(places IPLocator) realityscan.Locator {

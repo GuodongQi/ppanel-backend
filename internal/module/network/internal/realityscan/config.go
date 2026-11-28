@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -122,7 +123,53 @@ func Normalize(cfg dto.RealityScanConfig) (dto.RealityScanConfig, error) {
 		return dto.RealityScanConfig{}, err
 	}
 	cfg.Servers = servers
+	if err := cleanGeoIP(&cfg); err != nil {
+		return dto.RealityScanConfig{}, err
+	}
 	return cfg, nil
+}
+
+func cleanGeoIP(cfg *dto.RealityScanConfig) error {
+	cfg.GeoIPCityURL = strings.TrimSpace(cfg.GeoIPCityURL)
+	cfg.GeoIPASNURL = strings.TrimSpace(cfg.GeoIPASNURL)
+	cfg.GeoIPCitySHA256 = strings.ToLower(strings.TrimSpace(cfg.GeoIPCitySHA256))
+	cfg.GeoIPASNSHA256 = strings.ToLower(strings.TrimSpace(cfg.GeoIPASNSHA256))
+	if err := cleanGeoURL(cfg.GeoIPCityURL, "geoip_city_url"); err != nil {
+		return err
+	}
+	if err := cleanGeoURL(cfg.GeoIPASNURL, "geoip_asn_url"); err != nil {
+		return err
+	}
+	if err := cleanGeoDigest(cfg.GeoIPCitySHA256, "geoip_city_sha256"); err != nil {
+		return err
+	}
+	return cleanGeoDigest(cfg.GeoIPASNSHA256, "geoip_asn_sha256")
+}
+
+func cleanGeoURL(value, label string) error {
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return fmt.Errorf("%s must be an http(s) URL", label)
+	}
+	return nil
+}
+
+func cleanGeoDigest(value, label string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) != 64 {
+		return fmt.Errorf("%s must be a 64-character SHA256 hex digest", label)
+	}
+	for _, ch := range value {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return fmt.Errorf("%s must be a 64-character SHA256 hex digest", label)
+		}
+	}
+	return nil
 }
 
 func cleanServers(cfg dto.RealityScanConfig) ([]dto.RealityScanServer, error) {

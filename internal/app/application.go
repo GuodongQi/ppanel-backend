@@ -44,10 +44,10 @@ type Application struct {
 	Queue        *taskqueue.Client
 	Inspector    *asynq.Inspector
 	ExchangeRate *billing.CurrencyRateCache
-	// GeoIP is the open GeoIP database, nil when none is available: the
-	// request metadata then carries no location, and Enrich is a no-op.
-	GeoIP *geoip.IPLocation
-	Store repository.Store
+	// GeoSlot is the open City and ASN databases. It can be replaced when an
+	// administrator turns on downloads in the Reality scan settings.
+	GeoSlot *geoSlot
+	Store   repository.Store
 
 	// Domain modules (see docs/design/adr-001-modular-monolith.md). Application is
 	// their composition root; handlers call the module facades.
@@ -82,6 +82,13 @@ func NewApplication(c config.Config) *Application {
 	warnDatabaseTimeZone(c)
 
 	geoIP := openGeoIP(c.GeoIP)
+	if saved := openSavedGeoIP(db, c.GeoIP); saved != nil {
+		if geoIP != nil {
+			closeLocation(geoIP)
+		}
+		geoIP = saved
+	}
+	geo := newGeoSlot(c.GeoIP.Path, geoIP)
 
 	rds := redis.NewClient(&redis.Options{
 		Addr:     c.Redis.Host,
@@ -91,7 +98,7 @@ func NewApplication(c config.Config) *Application {
 	if err := rds.Ping(context.Background()).Err(); err != nil {
 		panic(err.Error())
 	}
-	return assemble(c, db, rds, geoIP, NewAsynqClient(c), NewAsynqInspector(c))
+	return assemble(c, db, rds, geo, NewAsynqClient(c), NewAsynqInspector(c))
 }
 
 // openGeoIP opens the GeoIP databases the configuration names. Geolocation
@@ -122,7 +129,7 @@ func openGeoIP(cfg config.GeoIPConfig) *geoip.IPLocation {
 
 // assemble builds the application on connected infrastructure: the store,
 // the modules in their construction order and the event bus.
-func assemble(c config.Config, db *gorm.DB, rds *redis.Client, geoIP *geoip.IPLocation, queue *taskqueue.Client, inspector *asynq.Inspector) *Application {
+func assemble(c config.Config, db *gorm.DB, rds *redis.Client, geo *geoSlot, queue *taskqueue.Client, inspector *asynq.Inspector) *Application {
 	authLimiter := ratelimit.NewPeriodLimit(86400, 15, rds, config.SendCountLimitKeyPrefix, ratelimit.Align())
 	store := NewStore(db, rds)
 	rate := billing.NewCurrencyRateCache(0)
@@ -133,7 +140,7 @@ func assemble(c config.Config, db *gorm.DB, rds *redis.Client, geoIP *geoip.IPLo
 		Queue:        queue,
 		Inspector:    inspector,
 		ExchangeRate: rate,
-		GeoIP:        geoIP,
+		GeoSlot:      geo,
 		Store:        store,
 		AuthLimiter:  authLimiter,
 	}

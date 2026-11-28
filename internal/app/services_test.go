@@ -11,7 +11,6 @@ import (
 	"github.com/perfect-panel/server/internal/app/bootstrap"
 	"github.com/perfect-panel/server/internal/app/lifecycle"
 	"github.com/perfect-panel/server/internal/config"
-	"github.com/perfect-panel/server/internal/infra/geoip"
 	httpserver "github.com/perfect-panel/server/internal/transport/http/server"
 	"github.com/perfect-panel/server/pkg/logger/logtest"
 	"github.com/perfect-panel/server/pkg/orm"
@@ -49,7 +48,7 @@ func TestAssembledDependenciesAreComplete(t *testing.T) {
 		_ = inspector.Close()
 	})
 
-	srv := assemble(c, db, rds, &geoip.IPLocation{}, queue, inspector)
+	srv := assemble(c, db, rds, newGeoSlot("", nil), queue, inspector)
 	bootstrapped := lifecycle.NewReadiness()
 	service := srv.serviceDependencies(bootstrapped)
 	for name, deps := range map[string]any{
@@ -112,7 +111,7 @@ func TestServicesStopTheHTTPServerFirstAndFlushTracesLast(t *testing.T) {
 		_ = queue.Close()
 		_ = inspector.Close()
 	})
-	srv := assemble(c, db, rds, &geoip.IPLocation{}, queue, inspector)
+	srv := assemble(c, db, rds, newGeoSlot("", nil), queue, inspector)
 
 	order := srv.services(c).StopOrder()
 

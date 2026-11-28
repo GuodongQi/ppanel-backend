@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/oschwald/geoip2-golang"
 	"github.com/perfect-panel/server/internal/config"
 	"github.com/perfect-panel/server/internal/module/billing"
 	"github.com/perfect-panel/server/internal/module/billing/entity/order"
@@ -71,12 +70,7 @@ func newPlatformModule(store repository.Store, srv *Application) platform.Servic
 		},
 		Clients: platformClientApplications{srv},
 		LogPath: srv.Runtime.Config().Logger.Path,
-		GeoIP: func() *geoip2.Reader {
-			if srv.GeoIP == nil {
-				return nil
-			}
-			return srv.GeoIP.DB
-		},
+		GeoIP:   srv.GeoSlot.CityDB,
 	})
 }
 

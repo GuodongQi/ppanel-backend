@@ -18,6 +18,14 @@ type RealityScanConfig struct {
 	Threads             int                 `json:"threads"`
 	TimeoutSeconds      int                 `json:"timeout_seconds"`
 	MaxCertBytes        int                 `json:"max_cert_bytes"`
+	// GeoIPDownload fetches the City and ASN databases when they are missing.
+	// Empty URLs use the built-in mirrors. A SHA256 pins that file; every
+	// download is still checked to be the expected GeoLite2 database.
+	GeoIPDownload   bool   `json:"geoip_download"`
+	GeoIPCityURL    string `json:"geoip_city_url"`
+	GeoIPCitySHA256 string `json:"geoip_city_sha256"`
+	GeoIPASNURL     string `json:"geoip_asn_url"`
+	GeoIPASNSHA256  string `json:"geoip_asn_sha256"`
 }
 
 // RealityScanServer is one VLESS server's own scan and apply policy.
@@ -89,8 +97,18 @@ type RealityScanEduSearch struct {
 	Error    string   `json:"error,omitempty"`
 }
 
+// RealityScanGeoStatus says whether the City and ASN databases are open.
+type RealityScanGeoStatus struct {
+	CityReady bool   `json:"city_ready"`
+	ASNReady  bool   `json:"asn_ready"`
+	Path      string `json:"path,omitempty"`
+	ASNPath   string `json:"asn_path,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 // RealityScanView is the config and the latest report together.
 type RealityScanView struct {
-	Config RealityScanConfig `json:"config"`
-	Report RealityScanReport `json:"report"`
+	Config RealityScanConfig    `json:"config"`
+	Report RealityScanReport    `json:"report"`
+	GeoIP  RealityScanGeoStatus `json:"geoip"`
 }

@@ -125,6 +125,8 @@ func TestOpenReplacesADatabaseWithTheWrongDigestFromTheMirror(t *testing.T) {
 	if err := os.WriteFile(path, stale, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	asn := newMirror(t, buildTestMMDB(GeoIPASNDBType, map[string]any{"autonomous_system_number": uint32(13335)}))
+	useMirrors(t, asn.URL, asn.URL)
 
 	// The mirror serves a file with another digest than the configured one.
 	wrong := newMirror(t, cityDatabase("FR"))
@@ -152,15 +154,13 @@ func TestOpenReplacesADatabaseWithTheWrongDigestFromTheMirror(t *testing.T) {
 	}
 }
 
-// The configured URL replaces the built-in mirror for the City database, and
-// the ASN database is then not fetched from the mirror: the operator has
-// left it.
-func TestOpenDownloadsFromTheConfiguredURLOnly(t *testing.T) {
+// A custom City URL does not replace the ASN database. That still comes from
+// the built-in mirror unless ASNURL names another one.
+func TestOpenStillDownloadsTheASNDatabaseWhenTheCityURLIsCustom(t *testing.T) {
 	builtin := newMirror(t, buildTestMMDB(GeoIPASNDBType, map[string]any{"autonomous_system_number": uint32(13335)}))
 	useMirrors(t, builtin.URL, builtin.URL)
 	own := newMirror(t, cityDatabase("AU"))
-	dir := t.TempDir()
-	path := filepath.Join(dir, "GeoLite2-City.mmdb")
+	path := filepath.Join(t.TempDir(), "GeoLite2-City.mmdb")
 
 	loc, err := Open(Options{Path: path, Download: true, DownloadURL: own.URL})
 	if err != nil {
@@ -168,15 +168,12 @@ func TestOpenDownloadsFromTheConfiguredURLOnly(t *testing.T) {
 	}
 	defer closeLocation(t, loc)
 
-	if own.requests.Load() != 1 || builtin.requests.Load() != 0 {
-		t.Fatalf("requests: own %d, built-in mirror %d; want one to the configured URL only", own.requests.Load(), builtin.requests.Load())
+	if own.requests.Load() != 1 || builtin.requests.Load() != 1 {
+		t.Fatalf("requests: city %d, asn mirror %d; want one each", own.requests.Load(), builtin.requests.Load())
 	}
-	assertOnlyCityDatabase(t, dir)
-	if loc.ASNDB != nil {
-		t.Fatal("an ASN database was opened although none was placed")
-	}
-	if got := loc.Enrich(requestmeta.New("1.1.1.1", "ua")).IPCountryCode; got != "AU" {
-		t.Fatalf("lookup = %q, want AU", got)
+	metadata := loc.Enrich(requestmeta.New("1.1.1.1", "ua"))
+	if metadata.IPCountryCode != "AU" || metadata.IPASN != 13335 {
+		t.Fatalf("enriched %+v, want the country and the network", metadata)
 	}
 }
 

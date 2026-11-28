@@ -69,6 +69,12 @@ type Options struct {
 	// check. A file that differs is downloaded again when Download is on and
 	// rejected otherwise; a download that differs never replaces the file.
 	SHA256 string
+	// ASNURL replaces the built-in mirror for the ASN database. Empty keeps
+	// the built-in mirror, including when the City database has its own URL.
+	ASNURL string
+	// ASNSHA256 is the hex digest the ASN database must have; empty skips
+	// that check. The file is still verified as a GeoLite2-ASN database.
+	ASNSHA256 string
 }
 
 // IPLocation holds the open City database and, when it could be opened,
@@ -116,19 +122,20 @@ func Open(opts Options) (*IPLocation, error) {
 	ipLoc := &IPLocation{Path: opts.Path, DB: db}
 	asnPath := filepath.Join(filepath.Dir(opts.Path), ASNDatabaseName)
 	ipLoc.ASNPath = asnPath
-	if _, err := os.Stat(asnPath); os.IsNotExist(err) {
-		if !opts.Download || opts.DownloadURL != "" {
-			logger.Infof("[GeoIP] No ASN database at %s; network organization will be omitted", asnPath)
-			return ipLoc, nil
-		}
-		logger.Infof("[GeoIP] ASN database not found, downloading from %s", asnDownloadURL)
-		if err := downloadDatabase(asnDownloadURL, asnPath, GeoIPASNDBType, nil); err != nil {
-			// ASN enrichment is optional. A transient download problem must not
-			// turn logging metadata into an application startup dependency.
-			logger.Errorf("[GeoIP] Failed to download ASN database; network organization will be omitted: %v", err)
-			return ipLoc, nil
-		}
-		logger.Infof("[GeoIP] ASN database downloaded successfully")
+	asnURL := opts.ASNURL
+	if asnURL == "" {
+		asnURL = asnDownloadURL
+	}
+	asnDigest, err := parseDigest(opts.ASNSHA256)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureDatabase(asnPath, asnURL, GeoIPASNDBType, asnDigest, opts.Download); err != nil {
+		// The City database still answers region questions. ASN is required
+		// for network checks, and the caller can see that it is missing.
+		logger.Errorf("[GeoIP] ASN database is unavailable; network organization will be omitted: %v", err)
+		return ipLoc, nil
 	}
 	if asnDB, err := geoip2.Open(asnPath); err != nil {
 		logger.Errorf("[GeoIP] Failed to open ASN database; network organization will be omitted: %v", err)
