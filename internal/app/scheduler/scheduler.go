@@ -66,6 +66,9 @@ var periodicTasks = []periodicTask{
 	{spec: "30 2 * * *", taskType: taskqueue.SchedulerLogCleanup, name: "log cleanup", opts: []asynq.Option{asynq.MaxRetry(3)}},
 	// schedule update exchange rate task: every day at 01:00
 	{spec: "0 1 * * *", taskType: taskqueue.SchedulerExchangeRate, name: "update exchange rate", opts: []asynq.Option{asynq.MaxRetry(3)}},
+	// The Reality scan clock is stored with the admin config, so the tick
+	// only asks whether that clock is due. A missed day waits for the next one.
+	{spec: "@every 60s", taskType: taskqueue.SchedulerRealityScan, name: "reality dest scan", opts: []asynq.Option{asynq.MaxRetry(0)}},
 }
 
 // Service enqueues the periodic tasks. Every process runs one, so a tick is

@@ -12,8 +12,16 @@ import (
 // per-request snapshot closure.
 func newNetworkModule(store repository.Store, srv *Application) network.Service {
 	return network.New(network.Deps{
-		Store:        store,
-		Logs:         store.Log(),
+		Store:    store,
+		Logs:     store.Log(),
+		Settings: store.System(),
+		Location: func() *time.Location {
+			location, err := time.LoadLocation(srv.Runtime.Config().AppLocation)
+			if err != nil {
+				return time.Local
+			}
+			return location
+		},
 		TrafficUsage: srv.TrafficUsage,
 		Subscription: srv.Subscription,
 		Redis:        srv.Redis,

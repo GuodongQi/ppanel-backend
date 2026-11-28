@@ -11,6 +11,7 @@ import (
 	dto "github.com/perfect-panel/server/internal/module/network/contract"
 	"github.com/perfect-panel/server/internal/module/network/internal/adminserver"
 	"github.com/perfect-panel/server/internal/module/network/internal/edge"
+	"github.com/perfect-panel/server/internal/module/network/internal/realityscan"
 	"github.com/perfect-panel/server/internal/module/network/internal/repo"
 	"github.com/perfect-panel/server/internal/module/network/internal/serverapi"
 	"github.com/perfect-panel/server/internal/module/network/internal/trafficstat"
@@ -38,6 +39,10 @@ type Service interface {
 	ToggleNodeStatus(ctx context.Context, req *dto.ToggleNodeStatusRequest) error
 	ResetSortWithNode(ctx context.Context, req *dto.ResetSortRequest) error
 	QueryNodeTag(ctx context.Context) (*dto.QueryNodeTagResponse, error)
+	GetRealityScan(ctx context.Context) (dto.RealityScanView, error)
+	UpdateRealityScan(ctx context.Context, cfg dto.RealityScanConfig) (dto.RealityScanView, error)
+	RunRealityScan(ctx context.Context) (dto.RealityScanView, error)
+	RunScheduledRealityScan(ctx context.Context) error
 
 	// Statistics serves the platform's reads of the node and traffic
 	// figures.
@@ -109,6 +114,10 @@ type Deps struct {
 	// Logs is the platform's system log, where the daily traffic statistics
 	// are recorded.
 	Logs repository.LogRepo
+	// Settings stores the Reality scanner config and its latest report.
+	Settings repository.SystemRepo
+	// Location is the panel time zone the daily scan clock uses.
+	Location func() *time.Location
 }
 
 // NewRepoBuilder exports the module-owned repository implementations for
@@ -165,6 +174,12 @@ func New(deps Deps) Service {
 			Traffic: deps.Store.TrafficLog(),
 			Logs:    deps.Logs,
 		}),
+		scan: realityscan.New(realityscan.Deps{
+			Nodes:    nodes,
+			Settings: realityscan.SystemSettings{Repo: deps.Settings},
+			Redis:    deps.Redis,
+			Location: deps.Location,
+		}),
 		store: deps.Store,
 	}
 }
@@ -175,6 +190,7 @@ type service struct {
 	api   *serverapi.Service
 	edge  *edge.Service
 	stats *trafficstat.Service
+	scan  *realityscan.Service
 	store Store
 }
 
@@ -236,6 +252,22 @@ func (s *service) ResetSortWithNode(ctx context.Context, req *dto.ResetSortReque
 
 func (s *service) QueryNodeTag(ctx context.Context) (*dto.QueryNodeTagResponse, error) {
 	return s.admin.QueryNodeTag(ctx)
+}
+
+func (s *service) GetRealityScan(ctx context.Context) (dto.RealityScanView, error) {
+	return s.scan.View(ctx)
+}
+
+func (s *service) UpdateRealityScan(ctx context.Context, cfg dto.RealityScanConfig) (dto.RealityScanView, error) {
+	return s.scan.Save(ctx, cfg)
+}
+
+func (s *service) RunRealityScan(ctx context.Context) (dto.RealityScanView, error) {
+	return s.scan.RunNow(ctx)
+}
+
+func (s *service) RunScheduledRealityScan(ctx context.Context) error {
+	return s.scan.RunScheduled(ctx)
 }
 
 func (s *service) GetServerConfig(ctx context.Context, req *dto.GetServerConfigRequest, meta RequestMeta) (*dto.GetServerConfigResponse, ResponseMeta, error) {

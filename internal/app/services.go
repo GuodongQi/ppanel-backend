@@ -187,6 +187,7 @@ func (srv *Application) taskDependencies(bootstrapped *lifecycle.Readiness) task
 		Subscription: srv.Subscription,
 		Tasks:        srv.Store.Task(),
 		System:       srv.Store.System(),
+		Network:      srv.Network,
 		ExchangeRate: srv.ExchangeRate,
 	}
 }

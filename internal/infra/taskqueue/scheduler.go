@@ -13,4 +13,6 @@ const (
 	SchedulerTrafficStat          = "scheduler:traffic:stat"
 	SchedulerLogCleanup           = "scheduler:log:cleanup"
 	SchedulerFlushTraffic         = "scheduler:flush:traffic"
+	// SchedulerRealityScan checks the daily Reality camouflage scan.
+	SchedulerRealityScan = "scheduler:reality:scan"
 )

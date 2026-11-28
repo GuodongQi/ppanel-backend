@@ -71,6 +71,13 @@ func registerAdminServerRoutes(router *server.Hertz, deps Dependencies) {
 	group.POST("/update", adminServer.UpdateServerHandler(deps.Network))
 }
 
+func registerAdminRealityScanRoutes(router *server.Hertz, deps Dependencies) {
+	group := deps.adminGroup(router, "/v1/admin/reality-scan")
+	group.GET("/", adminServer.GetRealityScanHandler(deps.Network))
+	group.PUT("/", adminServer.UpdateRealityScanHandler(deps.Network))
+	group.POST("/run", adminServer.RunRealityScanHandler(deps.Network))
+}
+
 func registerAdminSystemRoutes(router *server.Hertz, deps Dependencies) {
 	group := deps.adminGroup(router, "/v1/admin/system")
 	group.GET("/currency_config", adminSystem.GetCurrencyConfigHandler(deps.Platform))

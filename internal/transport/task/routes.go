@@ -5,12 +5,14 @@ import (
 	"github.com/perfect-panel/server/internal/infra/eventbus"
 	"github.com/perfect-panel/server/internal/infra/taskqueue"
 	"github.com/perfect-panel/server/internal/module/billing"
+	"github.com/perfect-panel/server/internal/module/network"
 	moduleSubscription "github.com/perfect-panel/server/internal/module/subscription"
 	"github.com/perfect-panel/server/internal/repository"
 	"github.com/perfect-panel/server/internal/transport/task/email"
 	"github.com/perfect-panel/server/internal/transport/task/events"
 	"github.com/perfect-panel/server/internal/transport/task/maintenance"
 	"github.com/perfect-panel/server/internal/transport/task/order"
+	"github.com/perfect-panel/server/internal/transport/task/realityscan"
 	"github.com/perfect-panel/server/internal/transport/task/sms"
 	"github.com/perfect-panel/server/internal/transport/task/subscription"
 	"github.com/perfect-panel/server/internal/transport/task/traffic"
@@ -29,6 +31,7 @@ type Dependencies struct {
 	// and system settings.
 	Tasks        repository.TaskRepo
 	System       repository.SystemRepo
+	Network      network.Service
 	ExchangeRate *billing.CurrencyRateCache
 	// Bootstrapped fires once the runtime settings the handlers read are
 	// loaded; the worker consumes only after it.
@@ -70,4 +73,5 @@ func RegisterHandlers(mux *asynq.ServeMux, deps Dependencies) {
 
 	mux.Handle(taskqueue.ForthwithQuotaTask, maintenance.NewQuotaTaskHandler(deps.Subscription, deps.Tasks))
 	mux.Handle(taskqueue.SchedulerExchangeRate, maintenance.NewRateHandler(maintenance.RateDependencies{System: deps.System, ExchangeRate: deps.ExchangeRate}))
+	mux.Handle(taskqueue.SchedulerRealityScan, realityscan.NewHandler(deps.Network))
 }
